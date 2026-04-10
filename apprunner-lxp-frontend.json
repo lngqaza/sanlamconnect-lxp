@@ -1,0 +1,20 @@
+{
+  "ServiceName": "sanlamconnect-lxp-frontend",
+  "SourceConfiguration": {
+    "ImageRepository": {
+      "ImageIdentifier": "684756697968.dkr.ecr.eu-west-1.amazonaws.com/sanlamconnect-lxp-frontend:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "3000"
+      }
+    },
+    "AutoDeploymentsEnabled": true,
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "arn:aws:iam::684756697968:role/AppRunnerECRAccessRole-sanlamconnect-lxp"
+    }
+  },
+  "InstanceConfiguration": {
+    "Cpu": "512",
+    "Memory": "1024"
+  }
+}

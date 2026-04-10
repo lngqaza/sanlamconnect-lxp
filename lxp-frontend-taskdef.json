@@ -1,0 +1,28 @@
+{
+  "family": "sanlamconnect-lxp-frontend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+
+  "executionRoleArn": "arn:aws:iam::684756697968:role/ecsTaskExecutionRole-sanlamconnect-lxp",
+
+  "containerDefinitions": [
+    {
+      "name": "lxp-frontend",
+      "image": "684756697968.dkr.ecr.eu-west-1.amazonaws.com/sanlamconnect-lxp-frontend:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 3000, "protocol": "tcp" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/sanlamconnect-lxp-frontend",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

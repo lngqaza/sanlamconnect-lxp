@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SanlamConnect LXP Backend - ECS Fargate + ALB (self-contained VPC)
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR image URI for the LXP backend (e.g. 684756697968.dkr.ecr.eu-west-1.amazonaws.com/sanlamconnect-lxp-backend:latest)
+
+  ContainerPort:
+    Type: Number
+    Default: 3001
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  Cpu:
+    Type: String
+    Default: '512'
+    AllowedValues: ['256','512','1024','2048','4096']
+
+  Memory:
+    Type: String
+    Default: '1024'
+    AllowedValues: ['512','1024','2048','3072','4096','6144','8192','10240','12288','16384','30720']
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.91.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: sanlamconnect-lxp-backend-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sanlamconnect-lxp-backend-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.91.1.0/24
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.91.2.0/24
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound HTTP to backend ALB
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ALB to reach backend task on container port
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/sanlamconnect-lxp-backend
+      RetentionInDays: 7
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: sanlamconnect-lxp-backend
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: sanlamconnect-lxp-backend
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: lxp-backend
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: 200-399
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: sanlamconnect-lxp-backend
+      Cluster: !Ref EcsCluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerName: lxp-backend
+          ContainerPort: !Ref ContainerPort
+
+Outputs:
+  BackendUrl:
+    Description: Public URL for the LXP backend (HTTP)
+    Value: !Sub "http://${LoadBalancer.DNSName}"
