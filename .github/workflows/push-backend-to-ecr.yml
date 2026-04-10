@@ -36,4 +36,3 @@ jobs:
           docker build -t ${ECR_REPO}:${IMAGE_TAG} ./apps/lxp-web
           docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
           docker push ${IMAGE_URI}
-``
