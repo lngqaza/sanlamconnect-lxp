@@ -22,3 +22,4 @@ fastify.listen({ port, host: "0.0.0.0" })
   .then(() => fastify.log.info(`lxp-api listening on 0.0.0.0:${port}`))
   .catch(err => { fastify.log.error(err); process.exit(1); });
 
+ 
