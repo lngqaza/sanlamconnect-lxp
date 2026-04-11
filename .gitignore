@@ -32,3 +32,5 @@ coverage/
 tmp/
 temp/
 *.tsbuildinfo
+*.ps1*.ps
+
