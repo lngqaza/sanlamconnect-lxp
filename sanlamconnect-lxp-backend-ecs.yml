@@ -236,6 +236,9 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: !Ref ContainerPort
           Secrets:
             - Name: DATABASE_URL
               ValueFrom: !Ref DatabaseUrlSecret
@@ -264,7 +267,7 @@ Resources:
       Protocol: HTTP
       Port: !Ref ContainerPort
       TargetType: ip
-      HealthCheckPath: /
+      HealthCheckPath: /health
       Matcher:
         HttpCode: 200-399
 
