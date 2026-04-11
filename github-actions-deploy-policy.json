@@ -79,6 +79,7 @@
         "ec2:CreateSubnet",
         "ec2:DeleteSubnet",
         "ec2:DescribeSubnets",
+        "ec2:ModifySubnetAttribute",
         "ec2:CreateInternetGateway",
         "ec2:DeleteInternetGateway",
         "ec2:DescribeInternetGateways",
@@ -95,12 +96,19 @@
         "ec2:DeleteSecurityGroup",
         "ec2:DescribeSecurityGroups",
         "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
         "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeAccountAttributes",
         "ec2:CreateTags",
         "ec2:DeleteTags",
-        "ec2:DescribeTags"
+        "ec2:DescribeTags",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeImages",
+        "ec2:DescribePrefixLists"
       ],
       "Resource": "*"
     },
