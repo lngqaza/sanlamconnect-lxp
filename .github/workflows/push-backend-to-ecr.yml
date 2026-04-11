@@ -3,13 +3,13 @@ name: Push backend image to ECR
 on:
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
-    permissions:
-      id-token: write
-      contents: read
 
     env:
       AWS_REGION: eu-west-1
@@ -30,9 +30,62 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push backend image
+      - name: Detect backend Dockerfile and build context
+        id: detect
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "=== Searching for Dockerfiles (excluding node_modules/.next) ==="
+          mapfile -t DOCKERFILES < <(find . -type f -name 'Dockerfile*' \
+            -not -path '*/node_modules/*' \
+            -not -path '*/.next/*' \
+            -not -path '*/.git/*' \
+            -not -path '*/packages/*' \
+            -print | sort)
+
+          if [ ${#DOCKERFILES[@]} -eq 0 ]; then
+            echo "❌ No Dockerfile found in the repo."
+            exit 1
+          fi
+
+          printf '%s\n' "${DOCKERFILES[@]}"
+
+          # Prefer Dockerfiles in folders that look like backend/api/server
+          PICKED=""
+          for f in "${DOCKERFILES[@]}"; do
+            case "$f" in
+              *backend*|*api*|*server* ) PICKED="$f"; break ;;
+            esac
+          done
+
+          # If not found, fallback to the first Dockerfile
+          if [ -z "$PICKED" ]; then
+            PICKED="${DOCKERFILES[0]}"
+          fi
+
+          CONTEXT_DIR="$(dirname "$PICKED")"
+          echo "✅ Picked Dockerfile: $PICKED"
+          echo "✅ Build context dir: $CONTEXT_DIR"
+
+          echo "dockerfile=$PICKED" >> "$GITHUB_OUTPUT"
+          echo "context=$CONTEXT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push backend image
+        shell: bash
+        run: |
+          set -euo pipefail
+
           IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
-          docker build -t ${ECR_REPO}:${IMAGE_TAG} ./apps/lxp-web
-          docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
-          docker push ${IMAGE_URI}
+          DOCKERFILE="${{ steps.detect.outputs.dockerfile }}"
+          CONTEXT="${{ steps.detect.outputs.context }}"
+
+          echo "Building ${IMAGE_URI}"
+          echo "Using Dockerfile: ${DOCKERFILE}"
+          echo "Using context: ${CONTEXT}"
+
+          docker build -f "${DOCKERFILE}" -t "${ECR_REPO}:${IMAGE_TAG}" "${CONTEXT}"
+          docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
+          docker push "${IMAGE_URI}"
+
+          echo "✅ Pushed: ${IMAGE_URI}"
