@@ -7,3 +7,4 @@ export interface Skill {
   description?: string
   tags?: string[]
 }
+
