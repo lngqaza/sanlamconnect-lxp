@@ -16,6 +16,8 @@ jobs:
       AWS_ACCOUNT_ID: 684756697968
       ECR_REPO: sanlamconnect-lxp-backend
       IMAGE_TAG: latest
+
+      # Confirmed backend location from your repo
       BACKEND_DIR: apps/lxp-api
       BACKEND_PORT: "3001"
 
@@ -23,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # STEP 2 (the key fix): assume the correct role via OIDC
+      # Step 2: OIDC assume role (the key fix)
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -38,18 +40,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          aws ecr describe-repositories --repository-names "${ECR_REPO}" --region "${AWS_REGION}" >/dev/null 2>&1 \
-          || aws ecr create-repository --repository-name "${ECR_REPO}" --region "${AWS_REGION}" >/dev/null
+          aws ecr describe-repositories \
+            --repository-names "${ECR_REPO}" \
+            --region "${AWS_REGION}" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+            --repository-name "${ECR_REPO}" \
+            --region "${AWS_REGION}" >/dev/null
+
           echo "✅ ECR repo ensured: ${ECR_REPO}"
 
       - name: Sanity check backend folder
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== BACKEND DIR ==="
+          echo "=== BACKEND DIR: ${BACKEND_DIR} ==="
           if [ ! -d "${BACKEND_DIR}" ]; then
-            echo "❌ BACKEND_DIR '${BACKEND_DIR}' does not exist."
-            echo "Folders under ./apps:"
+            echo "❌ BACKEND_DIR does not exist: ${BACKEND_DIR}"
+            echo "Contents of ./apps:"
             ls -la ./apps || true
             exit 1
           fi
@@ -59,6 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [ -f "${BACKEND_DIR}/Dockerfile" ]; then
             echo "✅ Dockerfile exists at ${BACKEND_DIR}/Dockerfile"
             exit 0
@@ -100,7 +108,7 @@ jobs:
           .env.*
           EOF
 
-          echo "✅ Generated Dockerfile and .dockerignore in ${BACKEND_DIR}"
+          echo "✅ Generated Dockerfile/.dockerignore in ${BACKEND_DIR}"
 
       - name: Build and push backend image
         shell: bash
