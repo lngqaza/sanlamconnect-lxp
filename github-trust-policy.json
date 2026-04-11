@@ -1,10 +1,10 @@
-﻿{
+{
   "Version": "2012-10-17",
   "Statement": [
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::-provider/token.actions.githubusercontent.com"
+        "Federated": "arn:aws:iam::684756697968:oidc-provider/token.actions.githubusercontent.com"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
@@ -12,7 +12,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:lngqaza//heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:lngqaza/sanlamconnect-lxp:*"
         }
       }
     }

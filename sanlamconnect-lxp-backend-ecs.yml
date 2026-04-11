@@ -1,10 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: SanlamConnect LXP Backend - ECS Fargate + ALB (self-contained VPC)
+Description: SanlamConnect LXP Backend - ECS Fargate + ALB + RDS PostgreSQL (self-contained VPC)
 
 Parameters:
   ImageUri:
     Type: String
-    Description: ECR image URI for the LXP backend (e.g. 684756697968.dkr.ecr.eu-west-1.amazonaws.com/sanlamconnect-lxp-backend:latest)
+    Description: ECR image URI for the LXP backend
+
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    Description: Master password for the PostgreSQL database (min 8 chars, store in GitHub secret DB_PASSWORD)
+    MinLength: 8
 
   ContainerPort:
     Type: Number
@@ -25,6 +31,9 @@ Parameters:
     AllowedValues: ['512','1024','2048','3072','4096','6144','8192','10240','12288','16384','30720']
 
 Resources:
+  # -------------------------
+  # VPC
+  # -------------------------
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -89,6 +98,9 @@ Resources:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
+  # -------------------------
+  # Security Groups
+  # -------------------------
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -111,12 +123,73 @@ Resources:
           ToPort: !Ref ContainerPort
           SourceSecurityGroupId: !Ref AlbSecurityGroup
 
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ECS tasks to reach PostgreSQL
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+
+  # -------------------------
+  # RDS PostgreSQL
+  # -------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for LXP backend RDS
+      SubnetIds:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: sanlamconnect-lxp-db
+      DBName: lxpdb
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '15'
+      MasterUsername: lxpadmin
+      MasterUserPassword: !Ref DBMasterPassword
+      AllocatedStorage: '20'
+      StorageType: gp2
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+
+  # -------------------------
+  # Secrets Manager - DATABASE_URL
+  # -------------------------
+  DatabaseUrlSecret:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: DBInstance
+    Properties:
+      Name: /sanlamconnect-lxp/backend/database-url
+      Description: PostgreSQL connection string for lxp-api
+      SecretString: !Sub
+        - "postgresql://lxpadmin:${DBMasterPassword}@${DBHost}:5432/lxpdb"
+        - DBHost: !GetAtt DBInstance.Endpoint.Address
+
+  # -------------------------
+  # CloudWatch Logs
+  # -------------------------
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /ecs/sanlamconnect-lxp-backend
       RetentionInDays: 7
 
+  # -------------------------
+  # ECS Cluster + IAM
+  # -------------------------
   EcsCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -134,7 +207,19 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadDatabaseUrlSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DatabaseUrlSecret
 
+  # -------------------------
+  # Task Definition
+  # -------------------------
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -151,6 +236,9 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
+          Secrets:
+            - Name: DATABASE_URL
+              ValueFrom: !Ref DatabaseUrlSecret
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -158,6 +246,9 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
+  # -------------------------
+  # ALB
+  # -------------------------
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -187,6 +278,9 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
+  # -------------------------
+  # ECS Service
+  # -------------------------
   EcsService:
     Type: AWS::ECS::Service
     DependsOn: Listener
@@ -210,3 +304,7 @@ Outputs:
   BackendUrl:
     Description: Public URL for the LXP backend (HTTP)
     Value: !Sub "http://${LoadBalancer.DNSName}"
+
+  DatabaseSecretArn:
+    Description: ARN of the DATABASE_URL secret in Secrets Manager
+    Value: !Ref DatabaseUrlSecret
