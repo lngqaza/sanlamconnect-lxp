@@ -55,8 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
-          # Build context is monorepo root so packages/ is accessible
-          docker build -f apps/lxp-web/Dockerfile -t "${IMAGE_URI}" .
+          docker build --progress=plain -f apps/lxp-web/Dockerfile -t "${IMAGE_URI}" apps/lxp-web
           docker push "${IMAGE_URI}"
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
           echo "Frontend pushed: ${IMAGE_URI}"
