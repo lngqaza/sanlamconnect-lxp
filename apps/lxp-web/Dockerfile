@@ -1,31 +1,26 @@
-# Build context must be the monorepo root:
-#   docker build -f apps/lxp-web/Dockerfile .
+# Build context: monorepo root
+#   docker build -f apps/lxp-web/Dockerfile -t lxp-web .
 
 FROM node:20-alpine AS builder
 
-WORKDIR /monorepo
+WORKDIR /app
 
-# Copy shared packages so @/packages/* imports resolve
-COPY packages/ ./packages/
+COPY apps/lxp-web/package*.json ./
+RUN npm ci
 
-# Install dependencies
-COPY apps/lxp-web/package*.json ./apps/lxp-web/
-RUN cd apps/lxp-web && npm ci
+COPY apps/lxp-web/ ./
+RUN npm run build
 
-# Copy source and build
-COPY apps/lxp-web/ ./apps/lxp-web/
-RUN cd apps/lxp-web && npm run build
-
-# --- Runtime image ---
+# --- Runtime ---
 FROM node:20-alpine AS runner
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY --from=builder /monorepo/apps/lxp-web/.next ./.next
-COPY --from=builder /monorepo/apps/lxp-web/node_modules ./node_modules
-COPY --from=builder /monorepo/apps/lxp-web/package.json ./package.json
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 
 EXPOSE 3000
 
