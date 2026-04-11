@@ -77,6 +77,23 @@ jobs:
           echo "BACKEND_URL=${BACKEND_URL}" >> "$GITHUB_ENV"
           echo "Backend URL: ${BACKEND_URL}"
 
+      - name: Clear stuck CloudFormation stack if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+          echo "Stack status: ${STATUS}"
+          if [[ "${STATUS}" == *"ROLLBACK_COMPLETE"* || "${STATUS}" == *"FAILED"* ]]; then
+            echo "Stack is in ${STATUS} — deleting before redeploy..."
+            aws cloudformation delete-stack --stack-name "${STACK_NAME}" --region "${AWS_REGION}"
+            aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}" --region "${AWS_REGION}"
+            echo "Stack deleted successfully"
+          fi
+
       - name: Deploy frontend CloudFormation stack
         shell: bash
         run: |
