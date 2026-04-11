@@ -43,15 +43,15 @@ jobs:
             --repository-name "${ECR_REPO}" \
             --region "${AWS_REGION}" >/dev/null
 
-      - name: Build and push backend image
+      - name: Build and push backend image (apps/lxp-api)
         shell: bash
         run: |
           set -euo pipefail
           ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_URI="${ECR_URI}/${ECR_REPO}:${IMAGE_TAG}"
 
-          echo "Building from ${BACKEND_DIR} using ${BACKEND_DIR}/Dockerfile"
-          docker build -t "${ECR_REPO}:${IMAGE_TAG}" "${BACKEND_DIR}"
+          echo "Building backend from ${BACKEND_DIR}"
+          docker build -f "${BACKEND_DIR}/Dockerfile" -t "${ECR_REPO}:${IMAGE_TAG}" "${BACKEND_DIR}"
           docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
           docker push "${IMAGE_URI}"
 
