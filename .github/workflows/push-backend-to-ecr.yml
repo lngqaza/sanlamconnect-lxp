@@ -16,6 +16,8 @@ jobs:
       AWS_ACCOUNT_ID: 684756697968
       ECR_REPO: sanlamconnect-lxp-backend
       IMAGE_TAG: latest
+      BACKEND_DIR: apps/lxp-api
+      BACKEND_PORT: "3001"
 
     steps:
       - name: Checkout repository
@@ -30,138 +32,102 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Auto-detect backend folder (no Dockerfile needed)
-        id: detect
+      - name: Ensure ECR repository exists
         shell: bash
         run: |
           set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names "${ECR_REPO}" \
+            --region "${AWS_REGION}" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+            --repository-name "${ECR_REPO}" \
+            --region "${AWS_REGION}" >/dev/null
 
-          echo "=== Repo layout (top level) ==="
+          echo "✅ ECR repo ensured: ${ECR_REPO}"
+
+      - name: Sanity dump (backend folder check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== TOP LEVEL ==="
           ls -la
-
-          echo "=== Searching for backend candidates ==="
-          CANDIDATES=()
-          for d in \
-            "apps/lxp-api" \
-            "apps/api" \
-            "backend" \
-            "api" \
-            "server" \
-            "apps/backend" \
-            "services/api"; do
-            if [ -d "$d" ]; then
-              CANDIDATES+=("$d")
-            fi
-          done
-
-          # If none of the above exist, try to find a likely node backend by scanning package.json files
-          if [ ${#CANDIDATES[@]} -eq 0 ]; then
-            echo "No standard backend folders found. Scanning for package.json with common backend deps..."
-            mapfile -t PKGS < <(find . -name package.json \
-              -not -path "*/node_modules/*" \
-              -not -path "*/.next/*" \
-              -print)
-
-            for p in "${PKGS[@]}"; do
-              DIR="$(dirname "$p")"
-              if grep -qE '"(fastify|express|nest|koa|hapi)\"' "$p"; then
-                CANDIDATES+=("$DIR")
-              fi
-            done
-          fi
-
-          if [ ${#CANDIDATES[@]} -eq 0 ]; then
-            echo "❌ Could not detect backend folder automatically."
-            echo "Found package.json files:"
-            find . -name package.json -not -path "*/node_modules/*" -not -path "*/.next/*" -maxdepth 5 -print || true
+          echo
+          echo "=== BACKEND DIR ==="
+          if [ ! -d "${BACKEND_DIR}" ]; then
+            echo "❌ BACKEND_DIR '${BACKEND_DIR}' does not exist."
+            echo "Folders under ./apps:"
+            ls -la ./apps || true
             exit 1
           fi
-
-          # Pick the best candidate deterministically
-          BACKEND_DIR="${CANDIDATES[0]}"
-          # Prefer apps/lxp-api if present
-          for d in "${CANDIDATES[@]}"; do
-            if [ "$d" = "apps/lxp-api" ]; then
-              BACKEND_DIR="$d"
-              break
-            fi
-          done
-
-          echo "✅ Picked backend dir: $BACKEND_DIR"
-          echo "backend_dir=$BACKEND_DIR" >> "$GITHUB_OUTPUT"
+          ls -la "${BACKEND_DIR}" | head -n 200
 
       - name: Ensure Dockerfile exists (auto-generate if missing)
-        id: dockerfile
         shell: bash
         run: |
           set -euo pipefail
-          BACKEND_DIR="${{ steps.detect.outputs.backend_dir }}"
 
-          echo "=== Checking Dockerfile in $BACKEND_DIR ==="
-          if [ -f "$BACKEND_DIR/Dockerfile" ]; then
-            echo "✅ Dockerfile already exists."
-          else
-            echo "⚠️ No Dockerfile found. Auto-generating a minimal Node backend Dockerfile..."
-            # Detect package manager
-            PM="npm"
-            if [ -f "$BACKEND_DIR/pnpm-lock.yaml" ]; then PM="pnpm"; fi
-            if [ -f "$BACKEND_DIR/yarn.lock" ]; then PM="yarn"; fi
-
-            cat > "$BACKEND_DIR/Dockerfile" << 'EOF'
-FROM node:20-alpine
-WORKDIR /app
-
-# Copy manifests first for caching
-COPY package*.json ./
-COPY pnpm-lock.yaml* yarn.lock* npm-shrinkwrap.json* ./
-
-# Install deps (choose what exists)
-RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile; \
-    elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
-    elif [ -f package-lock.json ]; then npm ci; \
-    else npm install; fi
-
-# Copy the rest
-COPY . .
-
-# Build if build script exists
-RUN npm run -s build || true
-
-# Default to 3001 (override in ECS/CFN if different)
-ENV PORT=3001
-EXPOSE 3001
-
-# Start (prefers npm start, falls back to node)
-CMD npm run -s start || node server.js
-EOF
-
-            # Also generate .dockerignore for speed/safety
-            cat > "$BACKEND_DIR/.dockerignore" << 'EOF'
-node_modules
-.next
-dist
-build
-coverage
-.git
-.github
-.env
-EOF
-
-            echo "✅ Dockerfile created at $BACKEND_DIR/Dockerfile"
+          if [ -f "${BACKEND_DIR}/Dockerfile" ]; then
+            echo "✅ Dockerfile exists at ${BACKEND_DIR}/Dockerfile"
+            exit 0
           fi
 
-      - name: Build and push backend image to ECR
+          echo "⚠️ No Dockerfile found. Auto-generating a minimal Node backend Dockerfile for this run..."
+
+          cat > "${BACKEND_DIR}/Dockerfile" << EOF
+          FROM node:20-alpine
+          WORKDIR /app
+
+          # Copy manifests first for caching
+          COPY package*.json ./
+          COPY pnpm-lock.yaml* yarn.lock* npm-shrinkwrap.json* ./
+
+          # Install deps (auto-detect)
+          RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile; \
+              elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
+              elif [ -f package-lock.json ]; then npm ci; \
+              else npm install; fi
+
+          # Copy the rest of the source
+          COPY . .
+
+          # Build if available (safe if no build script)
+          RUN npm run -s build || true
+
+          ENV NODE_ENV=production
+          ENV PORT=${BACKEND_PORT}
+          EXPOSE ${BACKEND_PORT}
+
+          # Start (prefers npm start; falls back to common files)
+          CMD npm run -s start || node dist/server.js || node server.js || node src/server.js
+          EOF
+
+          cat > "${BACKEND_DIR}/.dockerignore" << 'EOF'
+          node_modules
+          .next
+          dist
+          build
+          coverage
+          .git
+          .github
+          .env
+          .env.*
+          EOF
+
+          echo "✅ Generated Dockerfile and .dockerignore in ${BACKEND_DIR}"
+
+      - name: Build and push backend image
         shell: bash
         run: |
           set -euo pipefail
-          BACKEND_DIR="${{ steps.detect.outputs.backend_dir }}"
-          IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 
-          echo "Building backend from: $BACKEND_DIR"
-          echo "Pushing to: $IMAGE_URI"
+          ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          IMAGE_URI="${ECR_URI}/${ECR_REPO}:${IMAGE_TAG}"
 
-          docker build -t ${ECR_REPO}:${IMAGE_TAG} "$BACKEND_DIR"
-          docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
-          docker push ${IMAGE_URI}
+          echo "Building image: ${IMAGE_URI}"
+          echo "Using build context: ${BACKEND_DIR}"
+
+          docker build -t "${ECR_REPO}:${IMAGE_TAG}" "${BACKEND_DIR}"
+          docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
+          docker push "${IMAGE_URI}"
 
           echo "✅ Pushed: ${IMAGE_URI}"
