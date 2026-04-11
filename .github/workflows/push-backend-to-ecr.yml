@@ -30,62 +30,138 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Detect backend Dockerfile and build context
+      - name: Auto-detect backend folder (no Dockerfile needed)
         id: detect
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Searching for Dockerfiles (excluding node_modules/.next) ==="
-          mapfile -t DOCKERFILES < <(find . -type f -name 'Dockerfile*' \
-            -not -path '*/node_modules/*' \
-            -not -path '*/.next/*' \
-            -not -path '*/.git/*' \
-            -not -path '*/packages/*' \
-            -print | sort)
+          echo "=== Repo layout (top level) ==="
+          ls -la
 
-          if [ ${#DOCKERFILES[@]} -eq 0 ]; then
-            echo "❌ No Dockerfile found in the repo."
+          echo "=== Searching for backend candidates ==="
+          CANDIDATES=()
+          for d in \
+            "apps/lxp-api" \
+            "apps/api" \
+            "backend" \
+            "api" \
+            "server" \
+            "apps/backend" \
+            "services/api"; do
+            if [ -d "$d" ]; then
+              CANDIDATES+=("$d")
+            fi
+          done
+
+          # If none of the above exist, try to find a likely node backend by scanning package.json files
+          if [ ${#CANDIDATES[@]} -eq 0 ]; then
+            echo "No standard backend folders found. Scanning for package.json with common backend deps..."
+            mapfile -t PKGS < <(find . -name package.json \
+              -not -path "*/node_modules/*" \
+              -not -path "*/.next/*" \
+              -print)
+
+            for p in "${PKGS[@]}"; do
+              DIR="$(dirname "$p")"
+              if grep -qE '"(fastify|express|nest|koa|hapi)\"' "$p"; then
+                CANDIDATES+=("$DIR")
+              fi
+            done
+          fi
+
+          if [ ${#CANDIDATES[@]} -eq 0 ]; then
+            echo "❌ Could not detect backend folder automatically."
+            echo "Found package.json files:"
+            find . -name package.json -not -path "*/node_modules/*" -not -path "*/.next/*" -maxdepth 5 -print || true
             exit 1
           fi
 
-          printf '%s\n' "${DOCKERFILES[@]}"
-
-          # Prefer Dockerfiles in folders that look like backend/api/server
-          PICKED=""
-          for f in "${DOCKERFILES[@]}"; do
-            case "$f" in
-              *backend*|*api*|*server* ) PICKED="$f"; break ;;
-            esac
+          # Pick the best candidate deterministically
+          BACKEND_DIR="${CANDIDATES[0]}"
+          # Prefer apps/lxp-api if present
+          for d in "${CANDIDATES[@]}"; do
+            if [ "$d" = "apps/lxp-api" ]; then
+              BACKEND_DIR="$d"
+              break
+            fi
           done
 
-          # If not found, fallback to the first Dockerfile
-          if [ -z "$PICKED" ]; then
-            PICKED="${DOCKERFILES[0]}"
-          fi
+          echo "✅ Picked backend dir: $BACKEND_DIR"
+          echo "backend_dir=$BACKEND_DIR" >> "$GITHUB_OUTPUT"
 
-          CONTEXT_DIR="$(dirname "$PICKED")"
-          echo "✅ Picked Dockerfile: $PICKED"
-          echo "✅ Build context dir: $CONTEXT_DIR"
-
-          echo "dockerfile=$PICKED" >> "$GITHUB_OUTPUT"
-          echo "context=$CONTEXT_DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push backend image
+      - name: Ensure Dockerfile exists (auto-generate if missing)
+        id: dockerfile
         shell: bash
         run: |
           set -euo pipefail
+          BACKEND_DIR="${{ steps.detect.outputs.backend_dir }}"
 
+          echo "=== Checking Dockerfile in $BACKEND_DIR ==="
+          if [ -f "$BACKEND_DIR/Dockerfile" ]; then
+            echo "✅ Dockerfile already exists."
+          else
+            echo "⚠️ No Dockerfile found. Auto-generating a minimal Node backend Dockerfile..."
+            # Detect package manager
+            PM="npm"
+            if [ -f "$BACKEND_DIR/pnpm-lock.yaml" ]; then PM="pnpm"; fi
+            if [ -f "$BACKEND_DIR/yarn.lock" ]; then PM="yarn"; fi
+
+            cat > "$BACKEND_DIR/Dockerfile" << 'EOF'
+FROM node:20-alpine
+WORKDIR /app
+
+# Copy manifests first for caching
+COPY package*.json ./
+COPY pnpm-lock.yaml* yarn.lock* npm-shrinkwrap.json* ./
+
+# Install deps (choose what exists)
+RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile; \
+    elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
+    elif [ -f package-lock.json ]; then npm ci; \
+    else npm install; fi
+
+# Copy the rest
+COPY . .
+
+# Build if build script exists
+RUN npm run -s build || true
+
+# Default to 3001 (override in ECS/CFN if different)
+ENV PORT=3001
+EXPOSE 3001
+
+# Start (prefers npm start, falls back to node)
+CMD npm run -s start || node server.js
+EOF
+
+            # Also generate .dockerignore for speed/safety
+            cat > "$BACKEND_DIR/.dockerignore" << 'EOF'
+node_modules
+.next
+dist
+build
+coverage
+.git
+.github
+.env
+EOF
+
+            echo "✅ Dockerfile created at $BACKEND_DIR/Dockerfile"
+          fi
+
+      - name: Build and push backend image to ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+          BACKEND_DIR="${{ steps.detect.outputs.backend_dir }}"
           IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
-          DOCKERFILE="${{ steps.detect.outputs.dockerfile }}"
-          CONTEXT="${{ steps.detect.outputs.context }}"
 
-          echo "Building ${IMAGE_URI}"
-          echo "Using Dockerfile: ${DOCKERFILE}"
-          echo "Using context: ${CONTEXT}"
+          echo "Building backend from: $BACKEND_DIR"
+          echo "Pushing to: $IMAGE_URI"
 
-          docker build -f "${DOCKERFILE}" -t "${ECR_REPO}:${IMAGE_TAG}" "${CONTEXT}"
-          docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
-          docker push "${IMAGE_URI}"
+          docker build -t ${ECR_REPO}:${IMAGE_TAG} "$BACKEND_DIR"
+          docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
+          docker push ${IMAGE_URI}
 
           echo "✅ Pushed: ${IMAGE_URI}"
