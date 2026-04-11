@@ -42,16 +42,12 @@ jobs:
           || aws ecr create-repository \
             --repository-name "${ECR_REPO}" \
             --region "${AWS_REGION}" >/dev/null
-
           echo "✅ ECR repo ensured: ${ECR_REPO}"
 
-      - name: Sanity dump (backend folder check)
+      - name: Sanity check backend folder
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== TOP LEVEL ==="
-          ls -la
-          echo
           echo "=== BACKEND DIR ==="
           if [ ! -d "${BACKEND_DIR}" ]; then
             echo "❌ BACKEND_DIR '${BACKEND_DIR}' does not exist."
@@ -77,27 +73,22 @@ jobs:
           FROM node:20-alpine
           WORKDIR /app
 
-          # Copy manifests first for caching
           COPY package*.json ./
           COPY pnpm-lock.yaml* yarn.lock* npm-shrinkwrap.json* ./
 
-          # Install deps (auto-detect)
           RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile; \
               elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
               elif [ -f package-lock.json ]; then npm ci; \
               else npm install; fi
 
-          # Copy the rest of the source
           COPY . .
 
-          # Build if available (safe if no build script)
           RUN npm run -s build || true
 
           ENV NODE_ENV=production
           ENV PORT=${BACKEND_PORT}
           EXPOSE ${BACKEND_PORT}
 
-          # Start (prefers npm start; falls back to common files)
           CMD npm run -s start || node dist/server.js || node server.js || node src/server.js
           EOF
 
