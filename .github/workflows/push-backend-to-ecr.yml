@@ -16,8 +16,6 @@ jobs:
       AWS_ACCOUNT_ID: 684756697968
       ECR_REPO: sanlamconnect-lxp-backend
       IMAGE_TAG: latest
-
-      # Confirmed backend location from your repo
       BACKEND_DIR: apps/lxp-api
       BACKEND_PORT: "3001"
 
@@ -25,7 +23,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: OIDC assume role (the key fix)
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -46,7 +43,6 @@ jobs:
           || aws ecr create-repository \
             --repository-name "${ECR_REPO}" \
             --region "${AWS_REGION}" >/dev/null
-
           echo "✅ ECR repo ensured: ${ECR_REPO}"
 
       - name: Sanity check backend folder
