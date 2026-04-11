@@ -1,0 +1,170 @@
+name: Codebreaker AutoFix (Backend Dockerfile + Workflow) -> PR
+
+on:
+  workflow_run:
+    workflows: ["Push backend image to ECR"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  autofix:
+    # Run only if the triggering workflow failed OR manual dispatch
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure')
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (default branch)
+        uses: actions/checkout@v4
+
+      - name: Auto-detect and fix backend build issues
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BACKEND_DIR="apps/lxp-api"
+          BACKEND_DOCKERFILE="${BACKEND_DIR}/Dockerfile"
+          BACKEND_PKG="${BACKEND_DIR}/package.json"
+          BACKEND_INDEX="${BACKEND_DIR}/index.js"
+          BACKEND_DOCKERIGNORE="${BACKEND_DIR}/.dockerignore"
+          WF_BACKEND=".github/workflows/push-backend-to-ecr.yml"
+
+          echo "=== Codebreaker AutoFix starting ==="
+          echo "Backend dir: ${BACKEND_DIR}"
+
+          if [ ! -d "${BACKEND_DIR}" ]; then
+            echo "❌ Backend dir not found: ${BACKEND_DIR}"
+            echo "Folders under apps/:"
+            ls -la apps || true
+            exit 1
+          fi
+
+          # 1) Fix backend Dockerfile if it references lxp-web OR if missing
+          NEED_DOCKERFILE_FIX="yes"
+          if [ -f "${BACKEND_DOCKERFILE}" ]; then
+            if ! grep -q "apps/lxp-web" "${BACKEND_DOCKERFILE}"; then
+              NEED_DOCKERFILE_FIX="no"
+            fi
+          fi
+
+          if [ "${NEED_DOCKERFILE_FIX}" = "yes" ]; then
+            echo "✅ Writing backend-only Dockerfile (removes lxp-web build steps)"
+            cat > "${BACKEND_DOCKERFILE}" << 'EOF'
+FROM node:20-alpine
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+ENV NODE_ENV=production
+ENV PORT=3001
+EXPOSE 3001
+
+CMD ["node","index.js"]
+EOF
+          else
+            echo "✅ Backend Dockerfile already does not reference lxp-web"
+          fi
+
+          # 2) Ensure .dockerignore exists
+          if [ ! -f "${BACKEND_DOCKERIGNORE}" ]; then
+            echo "✅ Creating .dockerignore"
+            cat > "${BACKEND_DOCKERIGNORE}" << 'EOF'
+node_modules
+.next
+dist
+build
+coverage
+.git
+.github
+.env
+.env.*
+EOF
+          fi
+
+          # 3) Ensure package.json has start script (node index.js)
+          if [ -f "${BACKEND_PKG}" ]; then
+            if ! grep -q '"start"' "${BACKEND_PKG}"; then
+              echo "✅ Adding scripts.start to package.json"
+              python - << 'PY'
+import json, pathlib
+p = pathlib.Path("apps/lxp-api/package.json")
+data = json.loads(p.read_text(encoding="utf-8"))
+scripts = data.get("scripts") or {}
+scripts.setdefault("start", "node index.js")
+data["scripts"] = scripts
+p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+            else
+              echo "✅ package.json already has a start script"
+            fi
+          else
+            echo "❌ package.json not found at ${BACKEND_PKG}"
+            exit 1
+          fi
+
+          # 4) Ensure index.js exists (Fastify + /health)
+          if [ ! -f "${BACKEND_INDEX}" ]; then
+            echo "✅ Creating minimal Fastify index.js with /health"
+            cat > "${BACKEND_INDEX}" << 'EOF'
+require("dotenv").config();
+const fastify = require("fastify")({ logger: true });
+
+fastify.get("/health", async () => ({ status: "ok" }));
+fastify.get("/", async () => ({ service: "lxp-api", status: "running" }));
+
+const port = Number(process.env.PORT || 3001);
+fastify.listen({ port, host: "0.0.0.0" })
+  .then(() => fastify.log.info(`✅ lxp-api listening on 0.0.0.0:${port}`))
+  .catch(err => { fastify.log.error(err); process.exit(1); });
+EOF
+          else
+            echo "✅ index.js already exists"
+          fi
+
+          # 5) Ensure backend workflow builds apps/lxp-api (not lxp-web)
+          if [ -f "${WF_BACKEND}" ]; then
+            if grep -q "apps/lxp-web" "${WF_BACKEND}"; then
+              echo "✅ Removing lxp-web references from backend push workflow"
+              # Replace any build context references to lxp-web with lxp-api
+              sed -i 's#apps/lxp-web#apps/lxp-api#g' "${WF_BACKEND}"
+            fi
+
+            if ! grep -q "docker build" "${WF_BACKEND}"; then
+              echo "⚠️ No docker build line found in ${WF_BACKEND} (leaving as-is)"
+            fi
+          else
+            echo "⚠️ ${WF_BACKEND} not found (skipping workflow fix)"
+          fi
+
+          echo "=== Codebreaker AutoFix done ==="
+
+      - name: Create Pull Request (autofix)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Codebreaker: auto-fix backend Dockerfile/start (remove lxp-web build)"
+          title: "Codebreaker AutoFix: Backend Dockerfile/start (remove lxp-web build)"
+          body: |
+            This PR was auto-generated by the Codebreaker AutoFix workflow.
+
+            Fixes:
+            - Ensures apps/lxp-api/Dockerfile is backend-only (no apps/lxp-web build steps)
+            - Ensures apps/lxp-api/package.json has scripts.start
+            - Ensures apps/lxp-api/index.js exists with /health endpoint
+            - Ensures apps/lxp-api/.dockerignore exists
+            - Removes accidental lxp-web references from push-backend-to-ecr workflow if present
+
+            After merge:
+            - Re-run "Push backend image to ECR"
+            - Force ECS to redeploy if using the `latest` tag
+          branch: "codebreaker/autofix-backend"
+          delete-branch: true
