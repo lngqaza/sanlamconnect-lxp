@@ -1,0 +1,76 @@
+name: Codebreaker Compare (Dockerfile + Workflow audit)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run compare (print + save report)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="codebreaker-compare-report.txt"
+          echo "Repo: $GITHUB_REPOSITORY" | tee "$REPORT"
+          echo "Branch: $GITHUB_REF_NAME" | tee -a "$REPORT"
+          echo "Commit: $GITHUB_SHA" | tee -a "$REPORT"
+          echo "" | tee -a "$REPORT"
+
+          echo "=== DOCKERFILES (excluding node_modules/.next/.git) ===" | tee -a "$REPORT"
+          find . -type f \( -name Dockerfile -o -iname 'Dockerfile.*' \) \
+            -not -path '*/node_modules/*' \
+            -not -path '*/.next/*' \
+            -not -path '*/.git/*' \
+            -print | sort | tee -a "$REPORT"
+          echo "" | tee -a "$REPORT"
+
+          echo "=== DOCKERFILES THAT REFERENCE apps/lxp-web (ROOT CAUSE) ===" | tee -a "$REPORT"
+          set +e
+          for f in $(find . -type f \( -name Dockerfile -o -iname 'Dockerfile.*' \) \
+            -not -path '*/node_modules/*' \
+            -not -path '*/.next/*' \
+            -not -path '*/.git/*' \
+            -print | sort); do
+              grep -n "apps/lxp-web" "$f" >/tmp/hit 2>/dev/null
+              if [ $? -eq 0 ]; then
+                echo "" | tee -a "$REPORT"
+                echo "OFFENDER: $f" | tee -a "$REPORT"
+                cat /tmp/hit | tee -a "$REPORT"
+              fi
+          done
+          set -e
+          echo "" | tee -a "$REPORT"
+
+          echo "=== BACKEND WORKFLOW docker build lines ===" | tee -a "$REPORT"
+          if [ -f ".github/workflows/push-backend-to-ecr.yml" ]; then
+            grep -n "docker build" .github/workflows/push-backend-to-ecr.yml | tee -a "$REPORT" || true
+            echo "" | tee -a "$REPORT"
+            echo "=== Any lxp-web references in push-backend-to-ecr.yml ===" | tee -a "$REPORT"
+            grep -n "lxp-web" .github/workflows/push-backend-to-ecr.yml | tee -a "$REPORT" || true
+          else
+            echo "Missing: .github/workflows/push-backend-to-ecr.yml" | tee -a "$REPORT"
+          fi
+          echo "" | tee -a "$REPORT"
+
+          echo "=== BACKEND package.json start readiness ===" | tee -a "$REPORT"
+          if [ -f "apps/lxp-api/package.json" ]; then
+            echo "apps/lxp-api/package.json exists" | tee -a "$REPORT"
+            grep -n "\"start\"" apps/lxp-api/package.json | tee -a "$REPORT" || true
+            grep -n "\"main\"" apps/lxp-api/package.json | tee -a "$REPORT" || true
+          else
+            echo "Missing: apps/lxp-api/package.json" | tee -a "$REPORT"
+          fi
+
+          echo "" | tee -a "$REPORT"
+          echo "DONE. Attachments will include: $REPORT" | tee -a "$REPORT"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: codebreaker-compare-report
+          path: codebreaker-compare-report.txt
