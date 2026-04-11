@@ -15,224 +15,172 @@ jobs:
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure')
-
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout (default branch)
         uses: actions/checkout@v4
 
-      - name: Codebreaker AutoFix (backend Dockerfile/start + CFN health/PORT)
+      - name: Codebreaker AutoFix (backend Dockerfile/start + workflow + CFN)
         shell: bash
         run: |
           set -euo pipefail
+          python - << 'PY'
+          import json, re
+          from pathlib import Path
 
-          BACKEND_DIR="apps/lxp-api"
-          BACKEND_DOCKERFILE="${BACKEND_DIR}/Dockerfile"
-          BACKEND_DOCKERIGNORE="${BACKEND_DIR}/.dockerignore"
-          BACKEND_PKG="${BACKEND_DIR}/package.json"
-          BACKEND_INDEX="${BACKEND_DIR}/index.js"
+          BACKEND_DIR = Path("apps/lxp-api")
+          BACKEND_DOCKERFILE = BACKEND_DIR / "Dockerfile"
+          BACKEND_DOCKERIGNORE = BACKEND_DIR / ".dockerignore"
+          BACKEND_PKG = BACKEND_DIR / "package.json"
+          BACKEND_INDEX = BACKEND_DIR / "index.js"
 
-          WF_BACKEND=".github/workflows/push-backend-to-ecr.yml"
-          CFN_BACKEND="sanlamconnect-lxp-backend-ecs.yml"
+          WF_BACKEND = Path(".github/workflows/push-backend-to-ecr.yml")
+          CFN_BACKEND = Path("sanlamconnect-lxp-backend-ecs.yml")
 
-          echo "=== Codebreaker AutoFix starting ==="
-          echo "Backend dir: ${BACKEND_DIR}"
+          def die(msg):
+              raise SystemExit(msg)
 
-          if [ ! -d "${BACKEND_DIR}" ]; then
-            echo "❌ Backend dir not found: ${BACKEND_DIR}"
-            echo "Folders under apps/:"
-            ls -la apps || true
-            exit 1
-          fi
+          if not BACKEND_DIR.exists():
+              die(f"❌ Backend dir not found: {BACKEND_DIR}")
 
-          # --------------------------------------------------------------------
-          # A) Fix backend Dockerfile so it NEVER builds apps/lxp-web
-          # --------------------------------------------------------------------
-          NEED_DOCKERFILE_FIX="yes"
-          if [ -f "${BACKEND_DOCKERFILE}" ]; then
-            if ! grep -q "apps/lxp-web" "${BACKEND_DOCKERFILE}"; then
-              NEED_DOCKERFILE_FIX="no"
-            fi
-          fi
+          # -----------------------------
+          # A) Backend Dockerfile: ensure it does NOT build apps/lxp-web
+          # -----------------------------
+          dockerfile_text = """FROM node:20-alpine
+          WORKDIR /app
 
-          if [ "${NEED_DOCKERFILE_FIX}" = "yes" ]; then
-            echo "✅ Writing backend-only Dockerfile (removes lxp-web build steps)"
-            cat > "${BACKEND_DOCKERFILE}" << 'EOF'
-FROM node:20-alpine
-WORKDIR /app
+          COPY package*.json ./
+          RUN npm install
 
-COPY package*.json ./
-RUN npm install
+          COPY . .
 
-COPY . .
+          ENV NODE_ENV=production
+          ENV PORT=3001
+          EXPOSE 3001
 
-ENV NODE_ENV=production
-ENV PORT=3001
-EXPOSE 3001
+          CMD ["node","index.js"]
+          """.replace("\n          ", "\n").lstrip()
 
-CMD ["node","index.js"]
-EOF
-          else
-            echo "✅ Backend Dockerfile already does not reference lxp-web"
-          fi
+          if (not BACKEND_DOCKERFILE.exists()) or ("apps/lxp-web" in BACKEND_DOCKERFILE.read_text(encoding="utf-8", errors="replace")):
+              BACKEND_DOCKERFILE.write_text(dockerfile_text + "\n", encoding="utf-8")
 
-          # Ensure .dockerignore exists
-          if [ ! -f "${BACKEND_DOCKERIGNORE}" ]; then
-            echo "✅ Creating .dockerignore"
-            cat > "${BACKEND_DOCKERIGNORE}" << 'EOF'
-node_modules
-.next
-dist
-build
-coverage
-.git
-.github
-.env
-.env.*
-EOF
-          fi
+          # -----------------------------
+          # B) .dockerignore
+          # -----------------------------
+          if not BACKEND_DOCKERIGNORE.exists():
+              BACKEND_DOCKERIGNORE.write_text(
+                  "node_modules\n.next\ndist\nbuild\ncoverage\n.git\n.github\n.env\n.env.*\n",
+                  encoding="utf-8"
+              )
 
-          # --------------------------------------------------------------------
-          # B) Ensure backend can start: scripts.start + index.js
-          # --------------------------------------------------------------------
-          if [ ! -f "${BACKEND_PKG}" ]; then
-            echo "❌ Missing package.json: ${BACKEND_PKG}"
-            exit 1
-          fi
+          # -----------------------------
+          # C) package.json: ensure scripts.start exists
+          # -----------------------------
+          if not BACKEND_PKG.exists():
+              die(f"❌ Missing backend package.json: {BACKEND_PKG}")
 
-          # Add scripts.start if missing
-          if ! grep -q '"start"' "${BACKEND_PKG}"; then
-            echo "✅ Adding scripts.start to package.json"
-            python - << 'PY'
-import json, pathlib
-p = pathlib.Path("apps/lxp-api/package.json")
-data = json.loads(p.read_text(encoding="utf-8"))
-scripts = data.get("scripts") or {}
-scripts.setdefault("start", "node index.js")
-data["scripts"] = scripts
-p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-PY
-          else
-            echo "✅ package.json already has scripts.start"
-          fi
+          data = json.loads(BACKEND_PKG.read_text(encoding="utf-8"))
+          scripts = data.get("scripts") or {}
+          if "start" not in scripts:
+              scripts["start"] = "node index.js"
+          data["scripts"] = scripts
+          BACKEND_PKG.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-          # Create index.js if missing (Fastify + /health, binds 0.0.0.0, uses PORT)
-          if [ ! -f "${BACKEND_INDEX}" ]; then
-            echo "✅ Creating minimal Fastify index.js with /health"
-            cat > "${BACKEND_INDEX}" << 'EOF'
-require("dotenv").config();
-const fastify = require("fastify")({ logger: true });
+          # -----------------------------
+          # D) index.js: ensure exists (Fastify + /health)
+          # -----------------------------
+          if not BACKEND_INDEX.exists():
+              BACKEND_INDEX.write_text(
+                  """require("dotenv").config();
+          const fastify = require("fastify")({ logger: true });
 
-fastify.get("/health", async () => ({ status: "ok" }));
-fastify.get("/", async () => ({ service: "lxp-api", status: "running" }));
+          fastify.get("/health", async () => ({ status: "ok" }));
+          fastify.get("/", async () => ({ service: "lxp-api", status: "running" }));
 
-const port = Number(process.env.PORT || 3001);
-fastify.listen({ port, host: "0.0.0.0" })
-  .then(() => fastify.log.info(`✅ lxp-api listening on 0.0.0.0:${port}`))
-  .catch(err => { fastify.log.error(err); process.exit(1); });
-EOF
-          else
-            echo "✅ index.js already exists"
-          fi
+          const port = Number(process.env.PORT || 3001);
+          fastify.listen({ port, host: "0.0.0.0" })
+            .then(() => fastify.log.info(`✅ lxp-api listening on 0.0.0.0:${port}`))
+            .catch(err => { fastify.log.error(err); process.exit(1); });
+          """.replace("\n          ", "\n").lstrip() + "\n",
+                  encoding="utf-8"
+              )
 
-          # --------------------------------------------------------------------
-          # C) Ensure backend ECR workflow doesn't reference lxp-web
-          # --------------------------------------------------------------------
-          if [ -f "${WF_BACKEND}" ]; then
-            if grep -q "apps/lxp-web" "${WF_BACKEND}"; then
-              echo "✅ Removing lxp-web references from backend push workflow"
-              sed -i 's#apps/lxp-web#apps/lxp-api#g' "${WF_BACKEND}"
-            fi
-          else
-            echo "⚠️ ${WF_BACKEND} not found (skipping workflow fix)"
-          fi
+          # -----------------------------
+          # E) Backend push workflow: remove accidental lxp-web references if present
+          # -----------------------------
+          if WF_BACKEND.exists():
+              txt = WF_BACKEND.read_text(encoding="utf-8", errors="replace")
+              if "apps/lxp-web" in txt:
+                  WF_BACKEND.write_text(txt.replace("apps/lxp-web", "apps/lxp-api"), encoding="utf-8")
 
-          # --------------------------------------------------------------------
-          # D) CFN FIXES: /health healthcheck + PORT env var into lxp-backend container
-          # --------------------------------------------------------------------
-          if [ -f "${CFN_BACKEND}" ]; then
-            echo "✅ Patching CFN template: ${CFN_BACKEND}"
+          # -----------------------------
+          # F) CFN fix: HealthCheckPath=/health and inject PORT env var into lxp-backend container
+          # -----------------------------
+          if CFN_BACKEND.exists():
+              y = CFN_BACKEND.read_text(encoding="utf-8", errors="replace").splitlines()
 
-            # 1) Force HealthCheckPath: /health if HealthCheckPath exists
-            if grep -qE '^\s*HealthCheckPath:' "${CFN_BACKEND}"; then
-              sed -i -E 's|^(\s*HealthCheckPath:)\s*.*$|\1 /health|' "${CFN_BACKEND}"
-            else
-              echo "⚠️ Could not find HealthCheckPath line to update"
-            fi
+              # HealthCheckPath -> /health (best-effort replace)
+              y2 = []
+              for line in y:
+                  if re.match(r"^\s*HealthCheckPath:\s*", line):
+                      indent = re.match(r"^(\s*)", line).group(1)
+                      y2.append(f"{indent}HealthCheckPath: /health")
+                  else:
+                      y2.append(line)
+              y = y2
 
-            # 2) Inject PORT env var under container Name: lxp-backend if Environment is missing
-            python - << 'PY'
-import re
-from pathlib import Path
+              # Insert Environment: PORT under container "- Name: lxp-backend" if missing
+              # We do a light YAML-aware insertion by indentation
+              start = None
+              for i, line in enumerate(y):
+                  if re.match(r"^\s*-\s+Name:\s*lxp-backend\s*$", line):
+                      start = i
+                      break
 
-p = Path("sanlamconnect-lxp-backend-ecs.yml")
-txt = p.read_text(encoding="utf-8", errors="replace").splitlines()
+              if start is not None:
+                  base_indent = len(re.match(r"^(\s*)", y[start]).group(1))
+                  prop_indent = " " * (base_indent + 2)
 
-# Find "- Name: lxp-backend"
-start = None
-for i, line in enumerate(txt):
-    if re.match(r"^\s*-\s+Name:\s*lxp-backend\s*$", line):
-        start = i
-        break
+                  # end block
+                  end = len(y)
+                  for j in range(start + 1, len(y)):
+                      if re.match(r"^\s*-\s+Name:\s*", y[j]) and len(re.match(r"^(\s*)", y[j]).group(1)) == base_indent:
+                          end = j
+                          break
 
-if start is None:
-    print("WARN: Could not find container '- Name: lxp-backend' to inject PORT env var.")
-    p.write_text("\n".join(txt) + "\n", encoding="utf-8")
-    raise SystemExit(0)
+                  block = y[start:end]
+                  has_env = any(re.match(r"^\s*Environment:\s*$", ln) for ln in block)
 
-base_indent = len(re.match(r"^(\s*)", txt[start]).group(1))
-prop_indent = base_indent + 2
+                  if not has_env:
+                      # find PortMappings:
+                      pm = None
+                      for k in range(start, end):
+                          if re.match(r"^\s*PortMappings:\s*$", y[k]):
+                              pm = k
+                              break
 
-# Determine end of this container block
-end = len(txt)
-for j in range(start + 1, len(txt)):
-    if re.match(r"^\s*-\s+Name:\s*", txt[j]) and len(re.match(r"^(\s*)", txt[j]).group(1)) == base_indent:
-        end = j
-        break
+                      if pm is not None:
+                          pm_indent = len(re.match(r"^(\s*)", y[pm]).group(1))
+                          insert_at = pm + 1
+                          for k in range(pm + 1, end):
+                              cur_indent = len(re.match(r"^(\s*)", y[k]).group(1))
+                              if cur_indent <= pm_indent and y[k].strip():
+                                  insert_at = k
+                                  break
+                              insert_at = k + 1
 
-block = txt[start:end]
-if any(re.match(r"^\s*Environment:\s*$", ln) for ln in block):
-    print("OK: Environment already present for lxp-backend, skipping PORT injection.")
-    p.write_text("\n".join(txt) + "\n", encoding="utf-8")
-    raise SystemExit(0)
+                          env_block = [
+                              f"{prop_indent}Environment:",
+                              f"{prop_indent}  - Name: PORT",
+                              f"{prop_indent}    Value: !Ref ContainerPort",
+                          ]
+                          y[insert_at:insert_at] = env_block
 
-# Find PortMappings line for insertion point
-pm = None
-for k in range(start, end):
-    if re.match(r"^\s*PortMappings:\s*$", txt[k]):
-        pm = k
-        break
+              CFN_BACKEND.write_text("\n".join(y) + "\n", encoding="utf-8")
 
-if pm is None:
-    print("WARN: Could not find PortMappings under lxp-backend, skipping PORT injection.")
-    p.write_text("\n".join(txt) + "\n", encoding="utf-8")
-    raise SystemExit(0)
-
-pm_indent = len(re.match(r"^(\s*)", txt[pm]).group(1))
-insert_at = pm + 1
-for k in range(pm + 1, end):
-    cur_indent = len(re.match(r"^(\s*)", txt[k]).group(1))
-    if cur_indent <= pm_indent and txt[k].strip():
-        insert_at = k
-        break
-    insert_at = k + 1
-
-env_block = [
-    " " * prop_indent + "Environment:",
-    " " * (prop_indent + 2) + "- Name: PORT",
-    " " * (prop_indent + 4) + "Value: !Ref ContainerPort",
-]
-
-txt[insert_at:insert_at] = env_block
-p.write_text("\n".join(txt) + "\n", encoding="utf-8")
-print("OK: Inserted PORT env var into lxp-backend container.")
-PY
-          else
-            echo "⚠️ ${CFN_BACKEND} not found (skipping CFN fix)"
-          fi
-
-          echo "=== Codebreaker AutoFix done ==="
+          print("✅ Codebreaker AutoFix applied changes in working tree.")
+          PY
 
       - name: Create Pull Request (autofix)
         uses: peter-evans/create-pull-request@v6
@@ -248,14 +196,3 @@ PY
             - apps/lxp-api/package.json: ensures scripts.start exists (node index.js)
             - apps/lxp-api/index.js: ensured with /health endpoint + binds 0.0.0.0 + uses PORT
             - apps/lxp-api/.dockerignore: ensured
-            - .github/workflows/push-backend-to-ecr.yml: removes accidental lxp-web references if present
-            - sanlamconnect-lxp-backend-ecs.yml:
-              - HealthCheckPath forced to /health
-              - Injects env var PORT = !Ref ContainerPort into lxp-backend container (if missing)
-
-            After merge:
-            1) Re-run "Push backend image to ECR"
-            2) Force new ECS deployment (because :latest)
-            3) Update CloudFormation stack using patched template if required
-          branch: "codebreaker/autofix-backend-cfn"
-          delete-branch: true
