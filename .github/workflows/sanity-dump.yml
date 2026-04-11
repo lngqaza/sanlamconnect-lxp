@@ -1,0 +1,35 @@
+name: Sanity Dump (Repo Layout + Backend Detection)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Top-level listing
+        run: |
+          echo "=== TOP LEVEL ==="
+          ls -la
+
+      - name: Find Dockerfiles (excluding node_modules/.next)
+        run: |
+          echo "=== DOCKERFILES ==="
+          find . -type f \( -iname 'dockerfile' -o -iname 'dockerfile.*' \) \
+            -not -path '*/node_modules/*' \
+            -not -path '*/.next/*' \
+            -not -path '*/.git/*' \
+            -print | sort || true
+
+      - name: Find backend candidates
+        run: |
+          echo "=== BACKEND CANDIDATES ==="
+          for d in apps/lxp-api backend api server services apps/backend ; do
+            [ -d "$d" ] && echo "DIR=$d"
+          done
+          echo "=== package.json candidates (fastify/express/nest/koa/hapi) ==="
+          find . -name package.json -not -path "*/node_modules/*" -not -path "*/.next/*" -print \
+            -exec sh -c 'grep -qE "\"(fastify|express|nest|koa|hapi|@nestjs/core)\"" "$1" && echo "BACKEND_PKG=$1"' _ {} \;
