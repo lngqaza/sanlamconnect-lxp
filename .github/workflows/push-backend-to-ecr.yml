@@ -17,7 +17,6 @@ jobs:
       ECR_REPO: sanlamconnect-lxp-backend
       IMAGE_TAG: latest
       BACKEND_DIR: apps/lxp-api
-      BACKEND_PORT: "3001"
 
     steps:
       - name: Checkout repository
@@ -43,80 +42,15 @@ jobs:
           || aws ecr create-repository \
             --repository-name "${ECR_REPO}" \
             --region "${AWS_REGION}" >/dev/null
-          echo "✅ ECR repo ensured: ${ECR_REPO}"
-
-      - name: Sanity check backend folder
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "=== BACKEND DIR: ${BACKEND_DIR} ==="
-          if [ ! -d "${BACKEND_DIR}" ]; then
-            echo "❌ BACKEND_DIR does not exist: ${BACKEND_DIR}"
-            echo "Contents of ./apps:"
-            ls -la ./apps || true
-            exit 1
-          fi
-          ls -la "${BACKEND_DIR}" | head -n 200
-
-      - name: Ensure Dockerfile exists (auto-generate if missing)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f "${BACKEND_DIR}/Dockerfile" ]; then
-            echo "✅ Dockerfile exists at ${BACKEND_DIR}/Dockerfile"
-            exit 0
-          fi
-
-          echo "⚠️ No Dockerfile found. Auto-generating minimal Node backend Dockerfile..."
-
-          cat > "${BACKEND_DIR}/Dockerfile" << EOF
-          FROM node:20-alpine
-          WORKDIR /app
-
-          COPY package*.json ./
-          COPY pnpm-lock.yaml* yarn.lock* npm-shrinkwrap.json* ./
-
-          RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i --frozen-lockfile; \
-              elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
-              elif [ -f package-lock.json ]; then npm ci; \
-              else npm install; fi
-
-          COPY . .
-          RUN npm run -s build || true
-
-          ENV NODE_ENV=production
-          ENV PORT=${BACKEND_PORT}
-          EXPOSE ${BACKEND_PORT}
-
-          CMD npm run -s start || node dist/server.js || node server.js || node src/server.js
-          EOF
-
-          cat > "${BACKEND_DIR}/.dockerignore" << 'EOF'
-          node_modules
-          .next
-          dist
-          build
-          coverage
-          .git
-          .github
-          .env
-          .env.*
-          EOF
-
-          echo "✅ Generated Dockerfile/.dockerignore in ${BACKEND_DIR}"
 
       - name: Build and push backend image
         shell: bash
         run: |
           set -euo pipefail
-
           ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_URI="${ECR_URI}/${ECR_REPO}:${IMAGE_TAG}"
 
-          echo "Building image: ${IMAGE_URI}"
-          echo "Using build context: ${BACKEND_DIR}"
-
+          echo "Building from ${BACKEND_DIR} using ${BACKEND_DIR}/Dockerfile"
           docker build -t "${ECR_REPO}:${IMAGE_TAG}" "${BACKEND_DIR}"
           docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
           docker push "${IMAGE_URI}"

@@ -34,3 +34,7 @@ temp/
 *.tsbuildinfo
 *.ps1*.ps
 
+# Local helper / scratch files (do not commit)
+*-trust.json
+repair-oidc-role.ps1
+
