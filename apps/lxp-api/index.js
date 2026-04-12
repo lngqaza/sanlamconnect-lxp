@@ -2,7 +2,10 @@ require("dotenv").config();
 const fastify = require("fastify")({ logger: true });
 const { Pool } = require("pg");
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
 async function migrate() {
   await pool.query(`
