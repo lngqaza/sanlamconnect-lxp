@@ -54,9 +54,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
-          docker build --progress=plain -f apps/lxp-web/Dockerfile -t "${IMAGE_URI}" apps/lxp-web
-          docker push "${IMAGE_URI}"
+          SHA="${GITHUB_SHA::8}"
+          BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+          IMAGE_URI="${BASE}:${SHA}"
+          docker build --progress=plain -f apps/lxp-web/Dockerfile \
+            -t "${IMAGE_URI}" -t "${BASE}:latest" apps/lxp-web
+          docker push "${BASE}:${SHA}"
+          docker push "${BASE}:latest"
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
           echo "Frontend pushed: ${IMAGE_URI}"
 
@@ -107,6 +111,17 @@ jobs:
             --region "${AWS_REGION}" \
             --no-fail-on-empty-changeset
           echo "Frontend stack deployed"
+
+      - name: Force ECS redeployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "${STACK_NAME}" \
+            --service "${STACK_NAME}" \
+            --force-new-deployment \
+            --region "${AWS_REGION}" > /dev/null
+          echo "ECS service redeployment triggered"
 
       - name: Print frontend URL
         shell: bash
