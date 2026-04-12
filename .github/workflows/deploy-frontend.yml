@@ -53,9 +53,13 @@ jobs:
       - name: Build and push frontend image
         shell: bash
         run: |
-          set -euo pipefail
           IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
-          docker build --progress=plain -f apps/lxp-web/Dockerfile -t "${IMAGE_URI}" apps/lxp-web
+          BUILD_LOG=$(docker build --progress=plain -f apps/lxp-web/Dockerfile -t "${IMAGE_URI}" apps/lxp-web 2>&1) || {
+            echo "::error::DOCKER BUILD FAILED. Last 30 lines:%0A$(echo "$BUILD_LOG" | tail -30 | sed 's/$/\\n/' | tr -d '\n')"
+            echo "--- Full build log ---"
+            echo "$BUILD_LOG"
+            exit 1
+          }
           docker push "${IMAGE_URI}"
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
           echo "Frontend pushed: ${IMAGE_URI}"
