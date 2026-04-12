@@ -1,14 +1,14 @@
-# Build context: monorepo root
-#   docker build -f apps/lxp-web/Dockerfile -t lxp-web .
+# Build context: apps/lxp-web/
+#   docker build -f apps/lxp-web/Dockerfile -t lxp-web apps/lxp-web
 
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY apps/lxp-web/package*.json ./
+COPY package*.json ./
 RUN npm ci
 
-COPY apps/lxp-web/ ./
+COPY . .
 RUN npm run build
 
 # --- Runtime ---
