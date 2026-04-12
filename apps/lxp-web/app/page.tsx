@@ -1,15 +1,15 @@
 import { Skill } from "@/types/skill"
 
 async function getSkills(): Promise<Skill[]> {
-  const res = await fetch(`${process.env.API_URL || "http://localhost:3001"}/skills`, {
-    cache: "no-store"
-  })
-
-  if (!res.ok) {
-    throw new Error("Failed to fetch skills")
+  try {
+    const res = await fetch(`${process.env.API_URL || "http://localhost:3001"}/skills`, {
+      cache: "no-store"
+    })
+    if (!res.ok) return []
+    return res.json()
+  } catch {
+    return []
   }
-
-  return res.json()
 }
 
 export default async function Page() {

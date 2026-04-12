@@ -208,7 +208,7 @@ Resources:
       Protocol: HTTP
       Port: !Ref ContainerPort
       TargetType: ip
-      HealthCheckPath: /
+      HealthCheckPath: /api/health
       Matcher:
         HttpCode: 200-399
 
