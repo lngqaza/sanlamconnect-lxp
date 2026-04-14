@@ -1,10 +1,15 @@
+import { cacheTag } from "next/cache"
 import { Skill } from "@/types/skill"
+import SkillsDashboard from "@/app/components/SkillsDashboard"
 
 async function getSkills(): Promise<Skill[]> {
+  "use cache"
+  cacheTag("skills")
   try {
-    const res = await fetch(`${process.env.API_URL || "http://localhost:3001"}/skills`, {
-      cache: "no-store"
-    })
+    const res = await fetch(
+      `${process.env.API_URL || "http://localhost:3001"}/skills`,
+      { cache: "no-store" }
+    )
     if (!res.ok) return []
     return res.json()
   } catch {
@@ -14,22 +19,5 @@ async function getSkills(): Promise<Skill[]> {
 
 export default async function Page() {
   const skills = await getSkills()
-
-  return (
-    <main>
-      <h1>Sanlam LXP</h1>
-
-      {skills.length === 0 ? (
-        <p>No skills found</p>
-      ) : (
-        <ul>
-          {skills.map((s) => (
-            <li key={s.id}>
-              <strong>{s.name}</strong> — {s.category}
-            </li>
-          ))}
-        </ul>
-      )}
-    </main>
-  )
-} 
+  return <SkillsDashboard skills={skills} />
+}

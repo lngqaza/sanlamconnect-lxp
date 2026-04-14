@@ -94,11 +94,57 @@ fastify.get("/", async () => ({ service: "lxp-api", status: "running" }));
 
 fastify.get("/skills", async (request, reply) => {
   try {
-    const result = await pool.query("SELECT * FROM skills");
+    const result = await pool.query("SELECT * FROM skills ORDER BY category, name");
     return result.rows;
   } catch (err) {
     fastify.log.error(err);
     reply.status(500).send({ error: "Failed to fetch skills" });
+  }
+});
+
+fastify.get("/skills/:id", async (request, reply) => {
+  try {
+    const result = await pool.query("SELECT * FROM skills WHERE id = $1", [request.params.id]);
+    if (result.rows.length === 0) return reply.status(404).send({ error: "Skill not found" });
+    return result.rows[0];
+  } catch (err) {
+    fastify.log.error(err);
+    reply.status(500).send({ error: "Failed to fetch skill" });
+  }
+});
+
+fastify.patch("/skills/:id", async (request, reply) => {
+  const { id } = request.params;
+  const { current_level } = request.body || {};
+  if (current_level === undefined || current_level === null) {
+    return reply.status(400).send({ error: "current_level is required" });
+  }
+  const lvl = Number(current_level);
+  if (!Number.isInteger(lvl) || lvl < 0 || lvl > 5) {
+    return reply.status(400).send({ error: "current_level must be an integer 0–5" });
+  }
+  try {
+    const result = await pool.query(
+      "UPDATE skills SET current_level = $1 WHERE id = $2 RETURNING *",
+      [lvl, id]
+    );
+    if (result.rows.length === 0) return reply.status(404).send({ error: "Skill not found" });
+    return result.rows[0];
+  } catch (err) {
+    fastify.log.error(err);
+    reply.status(500).send({ error: "Failed to update skill" });
+  }
+});
+
+fastify.get("/categories", async (request, reply) => {
+  try {
+    const result = await pool.query(
+      "SELECT DISTINCT category, COUNT(*) as skill_count FROM skills GROUP BY category ORDER BY category"
+    );
+    return result.rows;
+  } catch (err) {
+    fastify.log.error(err);
+    reply.status(500).send({ error: "Failed to fetch categories" });
   }
 });
 
