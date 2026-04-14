@@ -1,10 +1,7 @@
-import { cacheTag } from "next/cache"
 import { Skill } from "@/types/skill"
 import SkillsDashboard from "@/app/components/SkillsDashboard"
 
 async function getSkills(): Promise<Skill[]> {
-  "use cache"
-  cacheTag("skills")
   try {
     const res = await fetch(
       `${process.env.API_URL || "http://localhost:3001"}/skills`,
