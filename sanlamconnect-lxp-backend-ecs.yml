@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: SanlamConnect LXP Backend - ECS Fargate + ALB + RDS PostgreSQL (self-contained VPC)
+Description: SanlamConnect LXP Backend - ECS Fargate + ALB (reuses existing VPC and RDS)
 
 Parameters:
   ImageUri:
@@ -9,8 +9,32 @@ Parameters:
   DBMasterPassword:
     Type: String
     NoEcho: true
-    Description: Master password for the PostgreSQL database (min 8 chars, store in GitHub secret DB_PASSWORD)
-    MinLength: 8
+    Description: Master password for the existing PostgreSQL database
+
+  # Existing resources — passed in by the workflow, never recreated
+  ExistingVpcId:
+    Type: String
+    Default: vpc-0a11971bde54ee0ae
+
+  ExistingSubnetAId:
+    Type: String
+    Default: subnet-047b137ed150a6c63
+
+  ExistingAlbSgId:
+    Type: String
+    Default: sg-0a0fae2494c37d4b4
+
+  ExistingServiceSgId:
+    Type: String
+    Default: sg-0d576d74ee5512ac4
+
+  ExistingDBSgId:
+    Type: String
+    Default: sg-067b99bf5fad9f4e5
+
+  DBEndpoint:
+    Type: String
+    Default: sanlamconnect-lxp-db.c3ey4ccwqez2.eu-west-1.rds.amazonaws.com
 
   ContainerPort:
     Type: Number
@@ -32,18 +56,8 @@ Parameters:
 
 Resources:
   # -------------------------
-  # VPC
+  # Networking — only what's missing
   # -------------------------
-  Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.91.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: sanlamconnect-lxp-backend-vpc
-
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -54,13 +68,13 @@ Resources:
   VpcGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref Vpc
+      VpcId: !Ref ExistingVpcId
       InternetGatewayId: !Ref InternetGateway
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref Vpc
+      VpcId: !Ref ExistingVpcId
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -70,113 +84,37 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  PublicSubnetA:
-    Type: AWS::EC2::Subnet
+  SubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      VpcId: !Ref Vpc
-      AvailabilityZone: !Select [0, !GetAZs '']
-      CidrBlock: 10.91.1.0/24
-      MapPublicIpOnLaunch: true
+      SubnetId: !Ref ExistingSubnetAId
+      RouteTableId: !Ref PublicRouteTable
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref Vpc
+      VpcId: !Ref ExistingVpcId
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.91.2.0/24
       MapPublicIpOnLaunch: true
 
-  PublicSubnetARouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnetA
-      RouteTableId: !Ref PublicRouteTable
-
-  PublicSubnetBRouteTableAssociation:
+  SubnetBRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
   # -------------------------
-  # Security Groups
-  # -------------------------
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow inbound HTTP to backend ALB
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-  ServiceSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow ALB to reach backend task on container port
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: !Ref ContainerPort
-          ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-
-  DBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow ECS tasks to reach PostgreSQL
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref ServiceSecurityGroup
-
-  # -------------------------
-  # RDS PostgreSQL
-  # -------------------------
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Subnets for LXP backend RDS
-      SubnetIds:
-        - !Ref PublicSubnetA
-        - !Ref PublicSubnetB
-
-  DBInstance:
-    Type: AWS::RDS::DBInstance
-    DeletionPolicy: Snapshot
-    Properties:
-      DBInstanceIdentifier: sanlamconnect-lxp-db
-      DBName: lxpdb
-      DBInstanceClass: db.t3.micro
-      Engine: postgres
-      EngineVersion: '15'
-      MasterUsername: lxpadmin
-      MasterUserPassword: !Ref DBMasterPassword
-      AllocatedStorage: '20'
-      StorageType: gp2
-      PubliclyAccessible: false
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      VPCSecurityGroups:
-        - !Ref DBSecurityGroup
-      BackupRetentionPeriod: 7
-      MultiAZ: false
-
-  # -------------------------
   # Secrets Manager - DATABASE_URL
   # -------------------------
   DatabaseUrlSecret:
     Type: AWS::SecretsManager::Secret
-    DependsOn: DBInstance
     Properties:
       Name: /sanlamconnect-lxp/backend/database-url
       Description: PostgreSQL connection string for lxp-api
       SecretString: !Sub
-        - "postgresql://lxpadmin:${DBMasterPassword}@${DBHost}:5432/lxpdb"
-        - DBHost: !GetAtt DBInstance.Endpoint.Address
+        - "postgresql://lxpadmin:${DBMasterPassword}@${DBEndpoint}:5432/lxpdb"
+        - DBEndpoint: !Ref DBEndpoint
 
   # -------------------------
   # CloudWatch Logs
@@ -251,20 +189,21 @@ Resources:
   # -------------------------
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: VpcGatewayAttachment
     Properties:
       Scheme: internet-facing
       Type: application
-      SecurityGroups: [!Ref AlbSecurityGroup]
-      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref ExistingAlbSgId]
+      Subnets: [!Ref ExistingSubnetAId, !Ref PublicSubnetB]
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      VpcId: !Ref Vpc
+      VpcId: !Ref ExistingVpcId
       Protocol: HTTP
       Port: !Ref ContainerPort
       TargetType: ip
-      HealthCheckPath: /
+      HealthCheckPath: /health
       Matcher:
         HttpCode: 200-399
 
@@ -290,11 +229,17 @@ Resources:
       LaunchType: FARGATE
       DesiredCount: !Ref DesiredCount
       TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
-          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: [!Ref ExistingSubnetAId, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref ExistingServiceSgId]
       LoadBalancers:
         - TargetGroupArn: !Ref TargetGroup
           ContainerName: lxp-backend

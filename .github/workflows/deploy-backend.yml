@@ -89,6 +89,12 @@ jobs:
             --parameter-overrides \
               ImageUri="${IMAGE_URI}" \
               DBMasterPassword="${{ secrets.DB_PASSWORD }}" \
+              ExistingVpcId="vpc-0a11971bde54ee0ae" \
+              ExistingSubnetAId="subnet-047b137ed150a6c63" \
+              ExistingAlbSgId="sg-0a0fae2494c37d4b4" \
+              ExistingServiceSgId="sg-0d576d74ee5512ac4" \
+              ExistingDBSgId="sg-067b99bf5fad9f4e5" \
+              DBEndpoint="sanlamconnect-lxp-db.c3ey4ccwqez2.eu-west-1.rds.amazonaws.com" \
             --capabilities CAPABILITY_IAM \
             --region "${AWS_REGION}" \
             --no-fail-on-empty-changeset
